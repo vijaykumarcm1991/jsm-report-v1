@@ -4,14 +4,21 @@ import pytz
 from app.config import TIMEZONE
 from app.routers import jira_router
 from fastapi.staticfiles import StaticFiles
+from app.routers import report_router
+from app.database import init_db
 
 app = FastAPI()
 
 # ✅ IMPORTANT: router first
 app.include_router(jira_router.router)
+app.include_router(report_router.router)
 
 # ✅ THEN static mount
-app.mount("/", StaticFiles(directory="app/static", html=True), name="static")
+app.mount("/ui", StaticFiles(directory="app/static", html=True), name="static")
+
+@app.on_event("startup")
+def startup():
+    init_db()
 
 @app.get("/")
 def home():

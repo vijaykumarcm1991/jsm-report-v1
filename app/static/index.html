@@ -4,21 +4,78 @@
 <head>
     <title>JSM Report</title>
     <style>
-        body { font-family: Arial; margin: 20px; }
-        select, input { width: 300px; margin-bottom: 10px; }
-        .box { margin-bottom: 20px; }
-        .fields {
-            height: 200px;
-            overflow-y: scroll;
-            border: 1px solid #ccc;
-            padding: 10px;
+        body {
+            font-family: 'Segoe UI', sans-serif;
+            background: #f0f2f5;
+            margin: 0;
         }
-        button { padding: 10px 20px; margin-right: 10px; cursor: pointer; }
+
+        .container {
+            max-width: 1200px;
+            margin: auto;
+            padding: 20px;
+        }
+
+        .card {
+            background: white;
+            padding: 20px;
+            border-radius: 12px;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+            margin-bottom: 20px;
+        }
+
+        h2 {
+            text-align: center;
+        }
+
+        label {
+            font-weight: bold;
+        }
+
+        select, input {
+            width: 100%;
+            padding: 8px;
+            margin-top: 5px;
+        }
+
+        button {
+            background: #4CAF50;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            padding: 8px 15px;
+            cursor: pointer;
+        }
+
+        button:hover {
+            background: #45a049;
+        }
+
+        button:disabled {
+            background: gray;
+        }  
     </style>
 </head>
 <body>
+<div class="container">
 
 <h2>JSM Report Generator</h2>
+
+<div class="card">
+    <h3>Saved Reports</h3>
+
+    <div style="display:flex; gap:10px; align-items:center;">
+        <select id="reportList" style="width:300px;"></select>
+
+        <button onclick="loadReport()">Load</button>
+        <button onclick="deleteReport()">Delete</button>
+    </div>
+
+    <br>
+
+    <input type="text" id="reportName" placeholder="Report Name" style="width:300px;">
+    <button onclick="saveReport()">Save Report</button>
+</div>
 
 <div class="box">
     <label>Project</label><br>
@@ -82,9 +139,25 @@
 
 <br>
 
+<div id="progressContainer" style="display:none;">
+    <progress id="progressBar" value="0" max="100"></progress>
+</div>
+
+<div id="loader" style="display:none; margin-bottom:10px; color:blue;">
+    Generating report...
+</div>
+
 <button onclick="downloadReport()">Download Excel</button>
+<button onclick="previewReport()">Preview</button>
+
+<div class="card">
+    <h3>Preview</h3>
+    <table id="previewTable" border="1"></table>
+</div>
 
 <script>
+
+let currentReportId = null; // ✅ ADD THIS
 
 async function loadData() {
     try {
@@ -150,19 +223,52 @@ function filterFields() {
 }
 
 async function downloadReport() {
-    const body = {
-        filters: {
-            project: getSelected("project"),
-            status: getSelected("status"),
-            issuetype: getSelected("issuetype"),
-            range: document.getElementById("range").value || null,
-            start_date: document.getElementById("start_date").value || null,
-            end_date: document.getElementById("end_date").value || null
-        },
-        fields: getFields()
-    };
+
+    // ✅ VALIDATION
+    if (getFields().length === 0) {
+        alert("Please select at least one field");
+        return;
+    }
+
+    if (getSelected("project").length === 0) {
+        alert("Please select at least one project");
+        return;
+    }
+
+    const btn = event.target;
+    btn.disabled = true;
+
+    document.getElementById("loader").style.display = "block";
+
+    // ✅ ADD PROGRESS START
+    const progressContainer = document.getElementById("progressContainer");
+    const bar = document.getElementById("progressBar");
+
+    progressContainer.style.display = "block";
+    bar.value = 0;
+
+    let progress = 0;
+    const interval = setInterval(() => {
+        progress += 10;
+        bar.value = progress;
+
+        if (progress >= 90) clearInterval(interval);
+    }, 500);
+    // ✅ ADD PROGRESS END
 
     try {
+        const body = {
+            filters: {
+                project: getSelected("project"),
+                status: getSelected("status"),
+                issuetype: getSelected("issuetype"),
+                range: document.getElementById("range").value || null,
+                start_date: document.getElementById("start_date").value || null,
+                end_date: document.getElementById("end_date").value || null
+            },
+            fields: getFields()
+        };
+
         const response = await fetch('/jira/download', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
@@ -170,7 +276,8 @@ async function downloadReport() {
         });
 
         if (!response.ok) {
-            throw new Error("Download failed");
+            const err = await response.json();
+            throw new Error(err.detail || "Download failed");
         }
 
         const blob = await response.blob();
@@ -182,8 +289,15 @@ async function downloadReport() {
         a.click();
 
     } catch (err) {
-        alert("Error generating report");
+        alert(err.message);
         console.error(err);
+    } finally {
+        btn.disabled = false;
+        document.getElementById("loader").style.display = "none";
+
+        // ✅ ADD THIS
+        document.getElementById("progressContainer").style.display = "none";
+        document.getElementById("progressBar").value = 0; // ✅ ADD
     }
 }
 
@@ -235,9 +349,178 @@ function getFields() {
         .map(o => o.value);
 }
 
+async function loadReports() {
+    const res = await fetch('/reports');
+    const data = await res.json();
+
+    const dropdown = document.getElementById("reportList");
+    dropdown.innerHTML = "";
+
+    data.forEach(r => {
+        const opt = document.createElement("option");
+        opt.value = r.id;
+        opt.text = r.name;
+        dropdown.appendChild(opt);
+    });
+}
+
+async function saveReport() {
+
+    const name = document.getElementById("reportName").value;
+
+    if (!name) {
+        alert("Enter report name");
+        return;
+    }
+
+    const body = {
+        name: name,
+        filters: {
+            project: getSelected("project"),
+            status: getSelected("status"),
+            issuetype: getSelected("issuetype"),
+            range: document.getElementById("range").value || null,
+            start_date: document.getElementById("start_date").value || null,
+            end_date: document.getElementById("end_date").value || null
+        },
+        fields: getFields()
+    };
+
+    let url = '/reports';
+    let method = 'POST';
+
+    if (currentReportId) {
+        url = `/reports/${currentReportId}`;
+        method = 'PUT';
+    }
+
+    await fetch(url, {
+        method: method,
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    });
+
+    alert("Report saved");
+    loadReports();
+    currentReportId = null; // ✅ RESET AFTER SAVE
+}
+
+async function loadReport() {
+
+    const id = document.getElementById("reportList").value;
+
+    const res = await fetch(`/reports/${id}`);
+    const data = await res.json();
+
+    currentReportId = data.id; // ✅ ADD
+
+    console.log("Loaded report:", data);
+
+    // filters
+    setMultiSelect("project", data.filters?.project || []);
+    setMultiSelect("status", data.filters?.status || []);
+    setMultiSelect("issuetype", data.filters?.issuetype || []);
+
+    document.getElementById("range").value = data.filters?.range || "";
+    document.getElementById("start_date").value = data.filters?.start_date || "";
+    document.getElementById("end_date").value = data.filters?.end_date || "";
+
+    // fields
+    const selected = document.getElementById("selectedFields");
+    selected.innerHTML = "";
+
+    const available = document.getElementById("availableFields");
+
+    data.fields.forEach(f => {
+        const match = Array.from(available.options).find(o => o.value === f);
+        if (match) {
+            selected.appendChild(match.cloneNode(true));
+        }
+    });
+}
+
+async function deleteReport() {
+
+    const id = document.getElementById("reportList").value;
+
+    if (!confirm("Delete this report?")) return;
+
+    await fetch(`/reports/${id}`, {
+        method: 'DELETE'
+    });
+
+    alert("Deleted");
+    loadReports();
+}
+
+function setMultiSelect(id, values) {
+    const select = document.getElementById(id);
+
+    Array.from(select.options).forEach(opt => {
+        opt.selected = values?.includes(opt.value);
+    });
+}
+
+async function previewReport() {
+
+    const body = {
+        filters: {
+            project: getSelected("project"),
+            status: getSelected("status"),
+            issuetype: getSelected("issuetype"),
+            range: document.getElementById("range").value || null,
+            start_date: document.getElementById("start_date").value || null,
+            end_date: document.getElementById("end_date").value || null
+        },
+        fields: getFields()
+    };
+
+    const res = await fetch('/jira/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    });
+
+    const data = await res.json();
+
+    renderTable(data.data);
+}
+
+function renderTable(data) {
+
+    const table = document.getElementById("previewTable");
+    table.innerHTML = "";
+
+    if (!data.length) {
+        table.innerHTML = "<tr><td>No Data</td></tr>";
+        return;
+    }
+
+    // headers
+    let header = "<tr>";
+    Object.keys(data[0]).forEach(k => {
+        header += `<th>${k}</th>`;
+    });
+    header += "</tr>";
+
+    table.innerHTML += header;
+
+    // rows
+    data.forEach(row => {
+        let r = "<tr>";
+        Object.values(row).forEach(v => {
+            r += `<td>${v || ""}</td>`;
+        });
+        r += "</tr>";
+        table.innerHTML += r;
+    });
+}
+
 loadData();
+loadReports();
 
 </script>
 
+</div>
 </body>
 </html>

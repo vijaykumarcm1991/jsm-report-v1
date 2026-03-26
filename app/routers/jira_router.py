@@ -111,6 +111,7 @@ def download_excel(request: SearchRequest):
 
     filters = request.filters.dict()
     selected_fields = request.fields
+
     if "key" not in selected_fields:
         selected_fields.insert(0, "key")
 
@@ -131,6 +132,7 @@ def download_excel(request: SearchRequest):
         data = JiraService.get("/rest/api/2/search", params=params)
 
         issues = data.get("issues", [])
+        total = data.get("total", 0)  # ✅ ADD THIS
         if not issues:
             break
 
@@ -149,7 +151,13 @@ def download_excel(request: SearchRequest):
 
         start_at += max_results
 
-        if start_at >= data.get("total", 0):
+        # ✅ PROGRESS FIRST
+        if total > 0:
+            progress = int((start_at / total) * 100)
+            print(f"PROGRESS:{progress}")
+
+        # ✅ THEN BREAK
+        if start_at >= total:
             break
 
     # ✅ ADD THIS BLOCK
