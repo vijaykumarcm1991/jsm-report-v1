@@ -12,6 +12,10 @@ from threading import Thread
 import threading
 import time
 import logging
+from app.database import get_connection
+from psycopg2.extras import Json
+from fastapi import WebSocket
+import asyncio
 
 # ✅ LOGGER CONFIG
 logging.basicConfig(
@@ -170,7 +174,8 @@ def generate_report(request: SearchRequest, job_id: str):
         start_at += max_results
 
         if total > 0:
-            progress = int((start_at / total) * 100)
+            progress = int((len(all_issues) / total) * 100) if total > 0 else 100
+            progress = min(progress, 100)
             progress_store[job_id] = progress
             logger.info(f"[{job_id}] Progress: {progress}%")
 
@@ -198,7 +203,32 @@ def start_download(request: SearchRequest):
         try:
             file_path, file_name = generate_report(request, job_id)
             jobs_store[job_id] = (file_path, file_name)
+            time.sleep(1)
             progress_store[job_id] = 100
+
+            # ✅ SAVE TO DB
+            conn = get_connection()
+            cur = conn.cursor()
+
+            cur.execute(
+                """
+                INSERT INTO report_history (name, file_path, filters, fields)
+                VALUES (%s, %s, %s, %s)
+                """,
+                (
+                    file_name,
+                    file_path,
+                    Json(request.filters.dict()),
+                    Json(request.fields)
+                )
+            )
+
+            conn.commit()
+            cur.close()
+            conn.close()
+
+            logger.info(f"[{job_id}] Saved to report_history")
+
         except Exception as e:
             progress_store[job_id] = -1  # error state
             logger.error(f"[{job_id}] ERROR: {str(e)}")
@@ -236,3 +266,165 @@ def download_file(job_id: str):
 @router.get("/progress/{job_id}")
 def get_progress(job_id: str):
     return {"progress": progress_store.get(job_id, 0)}
+
+@router.get("/history")
+def get_history():
+
+    from app.database import get_connection
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT id, name, file_path, created_at
+        FROM report_history
+        ORDER BY created_at DESC
+    """)
+
+    rows = cur.fetchall()
+
+    result = []
+    for r in rows:
+        result.append({
+            "id": r[0],
+            "name": r[1],
+            "file_path": r[2],
+            "created_at": str(r[3])
+        })
+
+    return result
+
+@router.get("/history/download/{id}")
+def download_history(id: int):
+
+    from app.database import get_connection
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        "SELECT file_path, name FROM report_history WHERE id=%s",
+        (id,)
+    )
+
+    row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Report not found")
+
+    file_path, name = row
+
+    return FileResponse(
+        path=file_path,
+        filename=name,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+@router.delete("/history/{id}")
+def delete_history(id: int):
+
+    from app.database import get_connection
+    conn = get_connection()
+    cur = conn.cursor()
+
+    # get file path
+    cur.execute("SELECT file_path FROM report_history WHERE id=%s", (id,))
+    row = cur.fetchone()
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    file_path = row[0]
+
+    # delete DB
+    cur.execute("DELETE FROM report_history WHERE id=%s", (id,))
+    conn.commit()
+
+    # delete file
+    import os
+    if os.path.exists(file_path):
+        os.remove(file_path)
+
+    return {"message": "Deleted"}
+
+@router.post("/schedule")
+def create_schedule(request: dict):
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute(
+        """
+        INSERT INTO scheduled_reports
+        (name, filters, fields, schedule_type, schedule_time, schedule_day, schedule_date)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
+        RETURNING id
+        """,
+        (
+            request["name"],
+            Json(request["filters"]),
+            Json(request["fields"]),
+            request["type"],
+            request.get("time"),
+            request.get("day"),
+            request.get("date")
+        )
+    )
+
+    schedule_id = cur.fetchone()[0]
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    # register immediately
+    from app.main import register_job
+    register_job({
+        "id": schedule_id,
+        "name": request["name"],
+        "filters": request["filters"],
+        "fields": request["fields"],
+        "type": request["type"],
+        "time": request.get("time"),
+        "day": request.get("day"),
+        "date": request.get("date")
+    })
+
+    return {"message": "Scheduled successfully"}
+
+@router.get("/schedule")
+def get_schedules():
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    cur.execute("""
+        SELECT id, name, schedule_type, schedule_time, schedule_day, schedule_date
+        FROM scheduled_reports
+        ORDER BY created_at DESC
+    """)
+
+    rows = cur.fetchall()
+
+    result = []
+    for r in rows:
+        result.append({
+            "id": r[0],
+            "name": r[1],
+            "type": r[2],
+            "time": r[3],
+            "day": r[4],
+            "date": r[5]
+        })
+
+    return result
+
+@router.websocket("/ws/{job_id}")
+async def websocket_progress(websocket: WebSocket, job_id: str):
+    await websocket.accept()
+
+    while True:
+        progress = progress_store.get(job_id, 0)
+        await websocket.send_json({"progress": progress})
+
+        if progress >= 100 or progress == -1:
+            break
+
+        await asyncio.sleep(1)

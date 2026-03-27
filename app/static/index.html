@@ -53,7 +53,60 @@
 
         button:disabled {
             background: gray;
-        }  
+        }
+
+        .card h3 {
+            margin-bottom: 15px;
+        }
+
+        /* Table */
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 14px;
+        }
+
+        th {
+            background: #f4f6f8;
+            text-align: left;
+            padding: 12px;
+            font-weight: 600;
+        }
+
+        td {
+            padding: 12px;
+            border-top: 1px solid #eee;
+        }
+
+        /* Hover */
+        tr:hover {
+            background: #f9fafb;
+        }
+
+        /* Buttons */
+        .btn {
+            padding: 6px 12px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 13px;
+        }
+
+        .btn-download {
+            background: #22c55e;
+            color: white;
+        }
+
+        .btn-delete {
+            background: #ef4444;
+            color: white;
+            margin-left: 5px;
+        }
+
+        .btn:hover {
+            opacity: 0.85;
+        }
+
     </style>
 </head>
 <body>
@@ -75,6 +128,62 @@
 
     <input type="text" id="reportName" placeholder="Report Name" style="width:300px;">
     <button onclick="saveReport()">Save Report</button>
+</div>
+
+<div class="card">
+    <h3>📊 Report History</h3>
+    <p style="color: gray; font-size: 13px;">
+        View, download or delete previously generated reports
+    </p>
+
+    <table id="historyTable" border="1" style="width:100%;">
+    </table>
+</div>
+
+<div class="card">
+    <h3>⏰ Schedule Report</h3>
+
+    <select id="scheduleReport" style="width:300px; padding:8px; margin-bottom:10px;"></select>
+
+    <label>Type</label>
+    <select id="scheduleType" onchange="toggleScheduleFields()">
+        <option value="none">No Schedule</option>
+        <option value="one-time">One Time</option>
+        <option value="daily">Daily</option>
+        <option value="weekly">Weekly</option>
+        <option value="monthly">Monthly</option>
+    </select><br><br>
+
+    <div id="timeField">
+        <label>Time</label>
+        <input type="time" id="scheduleTime">
+    </div>
+
+    <div id="dayField" style="display:none;">
+        <label>Day</label>
+        <select id="scheduleDay">
+            <option>monday</option>
+            <option>tuesday</option>
+            <option>wednesday</option>
+            <option>thursday</option>
+            <option>friday</option>
+            <option>saturday</option>
+            <option>sunday</option>
+        </select>
+    </div>
+
+    <div id="dateField" style="display:none;">
+        <label>Date</label>
+        <input type="number" id="scheduleDate" min="1" max="31">
+    </div>
+
+    <br>
+    <button onclick="createSchedule()">Create Schedule</button>
+</div>
+
+<div class="card">
+    <h3>📅 Scheduled Reports</h3>
+    <table id="scheduleTable"></table>
 </div>
 
 <div class="card">
@@ -280,57 +389,51 @@ async function downloadReport() {
 
         const { job_id } = await startRes.json();
 
-        const poll = setInterval(async () => {
-        const res = await fetch(`/jira/progress/${job_id}`);
-        const data = await res.json();
+        const protocol = window.location.protocol === "https:" ? "wss" : "ws";
+        const ws = new WebSocket(`${protocol}://${window.location.host}/jira/ws/${job_id}`);
 
-        bar.value = data.progress;
+        ws.onopen = () => console.log("✅ WS CONNECTED");
+        ws.onerror = (e) => console.log("❌ WS ERROR", e);
 
-        // ✅ ERROR HANDLING
-        if (data.progress === -1) {
-            clearInterval(poll);
-            alert("Report generation failed");
+        ws.onmessage = async (event) => {
 
-            document.getElementById("progressContainer").style.display = "none";
-            document.getElementById("progressBar").value = 0;
+            const data = JSON.parse(event.data);
+            console.log("📡 WS DATA:", data);
+            bar.value = data.progress;
 
-            return;
-        }
-
-        // ✅ SUCCESS
-        if (data.progress >= 100) {
-            clearInterval(poll);
-
-            const response = await fetch(`/jira/download/file?job_id=${job_id}`);
-
-            if (!response.ok) {
-                const err = await response.json();
-                throw new Error(err.detail || "Download failed");
+            if (data.progress === -1) {
+                alert("Report failed");
+                ws.close();
+                return;
             }
 
-            const blob = await response.blob();
-            const url = window.URL.createObjectURL(blob);
+            if (data.progress >= 100) {
+                ws.close();
+                document.getElementById("loader").style.display = "none";
+                setTimeout(async () => {
 
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = "jira_report.xlsx";
-            a.click();
+                    const response = await fetch(`/jira/download/file?job_id=${job_id}`);
+                    if (!response.ok) {
+                        alert("Download failed");
+                        return;
+                    }
+                    const blob = await response.blob();
 
-            alert("Report downloaded successfully");
+                    const url = window.URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = "jira_report.xlsx";
+                    a.click();
 
-            setTimeout(() => {
-                document.getElementById("progressContainer").style.display = "none";
-                document.getElementById("progressBar").value = 0;
-            }, 1000);
-        }
-    }, 1000);
+                }, 1000);
+            }
+        };
 
     } catch (err) {
         alert(err.message);
         console.error(err);
     } finally {
         btn.disabled = false;
-        document.getElementById("loader").style.display = "none";
     }
 }
 
@@ -560,8 +663,155 @@ function filterDropdown(id, value) {
     }
 }
 
+async function loadHistory() {
+
+    const res = await fetch('/jira/history');
+    const data = await res.json();
+
+    const table = document.getElementById("historyTable");
+    table.innerHTML = "";
+
+    let header = "<tr><th>Name</th><th>Date</th><th>Actions</th></tr>";
+    table.innerHTML += header;
+
+    data.forEach(r => {
+
+        let row = `<tr>
+            <td>${r.name}</td>
+            <td>${formatDate(r.created_at)}</td>
+            <td>
+                <button class="btn btn-download" onclick="downloadHistory(${r.id})">⬇ Download</button>
+                <button class="btn btn-delete" onclick="deleteHistory(${r.id})">🗑 Delete</button>
+            </td>
+        </tr>`;
+
+        table.innerHTML += row;
+    });
+
+    if (data.length === 0) {
+        table.innerHTML = `
+            <tr>
+                <td colspan="3" style="text-align:center; padding:20px; color:gray;">
+                    No reports generated yet
+                </td>
+            </tr>
+        `;
+        return;
+    }
+}
+
+function downloadHistory(id) {
+    window.location.href = `/jira/history/download/${id}`;
+}
+
+async function deleteHistory(id) {
+
+    if (!confirm("Delete this report?")) return;
+
+    await fetch(`/jira/history/${id}`, { method: "DELETE" });
+
+    loadHistory();
+}
+
+function formatDate(dateStr) {
+    const d = new Date(dateStr);
+
+    return d.toLocaleString("en-IN", {
+        day: "2-digit",
+        month: "short",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit"
+    });
+}
+
+function toggleScheduleFields() {
+    const type = document.getElementById("scheduleType").value;
+
+    document.getElementById("dayField").style.display =
+        type === "weekly" ? "block" : "none";
+
+    document.getElementById("dateField").style.display =
+        type === "monthly" ? "block" : "none";
+}
+
+async function createSchedule() {
+
+    const value = document.getElementById("scheduleReport").value;
+
+    if (!value) {
+        alert("Please select a report");
+        return;
+    }
+
+    const selected = JSON.parse(value);
+
+    const type = document.getElementById("scheduleType").value;
+
+    if (type === "none") {
+        alert("No schedule selected");
+        return;
+    }
+
+    const body = {
+        name: selected.name,
+        filters: selected.filters,
+        fields: selected.fields,
+        type: document.getElementById("scheduleType").value,
+        time: document.getElementById("scheduleTime").value,
+        day: document.getElementById("scheduleDay").value,
+        date: document.getElementById("scheduleDate").value
+    };
+
+    const res = await fetch('/jira/schedule', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+    });
+
+    const data = await res.json();
+    alert(data.message);
+}
+
+async function loadSchedules() {
+
+    const res = await fetch('/jira/schedule');
+    const data = await res.json();
+
+    const table = document.getElementById("scheduleTable");
+    table.innerHTML = "<tr><th>Name</th><th>Type</th><th>Time</th></tr>";
+
+    data.forEach(s => {
+        table.innerHTML += `
+        <tr>
+            <td>${s.name}</td>
+            <td>${s.type}</td>
+            <td>${s.time}</td>
+        </tr>`;
+    });
+}
+
+async function loadScheduleReports() {
+
+    const res = await fetch('/reports');
+    const data = await res.json();
+
+    const dropdown = document.getElementById("scheduleReport");
+    dropdown.innerHTML = "";
+
+    data.forEach(r => {
+        const opt = document.createElement("option");
+        opt.value = JSON.stringify(r);
+        opt.text = `${r.name} (ID: ${r.id})`;
+        dropdown.appendChild(opt);
+    });
+}
+
 loadData();
 loadReports();
+loadHistory();  // ✅ ADD
+loadSchedules();  // ✅ ADD
+loadScheduleReports();
 
 </script>
 

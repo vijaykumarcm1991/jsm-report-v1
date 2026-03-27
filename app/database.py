@@ -29,6 +29,31 @@ def init_db():
     );
     """)
 
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS report_history (
+        id SERIAL PRIMARY KEY,
+        name TEXT,
+        file_path TEXT,
+        filters JSONB,
+        fields JSONB,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS scheduled_reports (
+        id SERIAL PRIMARY KEY,
+        name TEXT,
+        filters JSONB,
+        fields JSONB,
+        schedule_type TEXT,
+        schedule_time TEXT,
+        schedule_day TEXT,
+        schedule_date INTEGER,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+    """)
+
     conn.commit()
     cur.close()
     conn.close()
