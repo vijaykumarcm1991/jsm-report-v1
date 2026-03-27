@@ -12,6 +12,8 @@ services:
       - .env
     environment:
       - TZ=Asia/Kolkata
+    volumes:
+      - ./reports:/app/reports
     depends_on:
       - postgres
 

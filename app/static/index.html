@@ -77,19 +77,30 @@
     <button onclick="saveReport()">Save Report</button>
 </div>
 
-<div class="box">
-    <label>Project</label><br>
-    <select id="project" multiple></select>
+<div class="card">
+
+<div style="display:flex; gap:20px;">
+
+    <div style="flex:1;">
+        <label>Project</label>
+        <input type="text" onkeyup="filterDropdown('project', this.value)" placeholder="Search...">
+        <select id="project" multiple size="8"></select>
+    </div>
+
+    <div style="flex:1;">
+        <label>Status</label>
+        <input type="text" onkeyup="filterDropdown('status', this.value)" placeholder="Search...">
+        <select id="status" multiple size="8"></select>
+    </div>
+
+    <div style="flex:1;">
+        <label>Issue Type</label>
+        <input type="text" onkeyup="filterDropdown('issuetype', this.value)" placeholder="Search...">
+        <select id="issuetype" multiple size="8"></select>
+    </div>
+
 </div>
 
-<div class="box">
-    <label>Status</label><br>
-    <select id="status" multiple></select>
-</div>
-
-<div class="box">
-    <label>Issue Type</label><br>
-    <select id="issuetype" multiple></select>
 </div>
 
 <div class="box">
@@ -247,15 +258,6 @@ async function downloadReport() {
     progressContainer.style.display = "block";
     bar.value = 0;
 
-    let progress = 0;
-    const interval = setInterval(() => {
-        progress += 10;
-        bar.value = progress;
-
-        if (progress >= 90) clearInterval(interval);
-    }, 500);
-    // ✅ ADD PROGRESS END
-
     try {
         const body = {
             filters: {
@@ -269,24 +271,59 @@ async function downloadReport() {
             fields: getFields()
         };
 
-        const response = await fetch('/jira/download', {
+        // STEP 1 — start job
+        const startRes = await fetch('/jira/download/start', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body)
         });
 
-        if (!response.ok) {
-            const err = await response.json();
-            throw new Error(err.detail || "Download failed");
+        const { job_id } = await startRes.json();
+
+        const poll = setInterval(async () => {
+        const res = await fetch(`/jira/progress/${job_id}`);
+        const data = await res.json();
+
+        bar.value = data.progress;
+
+        // ✅ ERROR HANDLING
+        if (data.progress === -1) {
+            clearInterval(poll);
+            alert("Report generation failed");
+
+            document.getElementById("progressContainer").style.display = "none";
+            document.getElementById("progressBar").value = 0;
+
+            return;
         }
 
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
+        // ✅ SUCCESS
+        if (data.progress >= 100) {
+            clearInterval(poll);
 
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "jira_report.xlsx";
-        a.click();
+            const response = await fetch(`/jira/download/file?job_id=${job_id}`);
+
+            if (!response.ok) {
+                const err = await response.json();
+                throw new Error(err.detail || "Download failed");
+            }
+
+            const blob = await response.blob();
+            const url = window.URL.createObjectURL(blob);
+
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = "jira_report.xlsx";
+            a.click();
+
+            alert("Report downloaded successfully");
+
+            setTimeout(() => {
+                document.getElementById("progressContainer").style.display = "none";
+                document.getElementById("progressBar").value = 0;
+            }, 1000);
+        }
+    }, 1000);
 
     } catch (err) {
         alert(err.message);
@@ -294,10 +331,6 @@ async function downloadReport() {
     } finally {
         btn.disabled = false;
         document.getElementById("loader").style.display = "none";
-
-        // ✅ ADD THIS
-        document.getElementById("progressContainer").style.display = "none";
-        document.getElementById("progressBar").value = 0; // ✅ ADD
     }
 }
 
@@ -514,6 +547,17 @@ function renderTable(data) {
         r += "</tr>";
         table.innerHTML += r;
     });
+}
+
+function filterDropdown(id, value) {
+
+    const search = value.toLowerCase();
+    const options = document.getElementById(id).options;
+
+    for (let i = 0; i < options.length; i++) {
+        const txt = options[i].text.toLowerCase();
+        options[i].style.display = txt.includes(search) ? "" : "none";
+    }
 }
 
 loadData();

@@ -25,7 +25,7 @@ def generate_excel(data: list):
     timestamp = datetime.now(tz).strftime("%Y%m%d_%H%M%S")
 
     file_name = f"jira_report_{timestamp}.xlsx"
-    file_path = f"/tmp/{file_name}"
+    file_path = f"/app/reports/{file_name}"
 
     df.to_excel(file_path, index=False)
 

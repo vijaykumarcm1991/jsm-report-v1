@@ -7,9 +7,27 @@ from app.models.search_model import SearchRequest
 from fastapi.responses import FileResponse
 from app.services.excel_service import generate_excel
 from fastapi import HTTPException
+import uuid
+from threading import Thread
+import threading
+import time
+import logging
+
+# ✅ LOGGER CONFIG
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s"
+)
+
+logger = logging.getLogger(__name__)
 
 # ✅ DEFINE ROUTER FIRST
 router = APIRouter(prefix="/jira", tags=["Jira"])
+
+# ✅ ADD THIS
+progress_store = {}
+
+jobs_store = {}  # job_id → file_path
 
 @router.get("/projects")
 def get_projects():
@@ -106,9 +124,7 @@ def search_issues(request: SearchRequest):
         "data": all_issues
     }
 
-@router.post("/download")
-def download_excel(request: SearchRequest):
-
+def generate_report(request: SearchRequest, job_id: str):
     filters = request.filters.dict()
     selected_fields = request.fields
 
@@ -116,6 +132,7 @@ def download_excel(request: SearchRequest):
         selected_fields.insert(0, "key")
 
     jql = build_jql(filters)
+    logger.info(f"[{job_id}] JQL: {jql}")
 
     all_issues = []
     start_at = 0
@@ -132,14 +149,15 @@ def download_excel(request: SearchRequest):
         data = JiraService.get("/rest/api/2/search", params=params)
 
         issues = data.get("issues", [])
-        total = data.get("total", 0)  # ✅ ADD THIS
+        total = data.get("total", 0)
+
+        logger.info(f"[{job_id}] Fetched batch: {len(issues)} issues (Total: {total})")
+
         if not issues:
             break
 
         for issue in issues:
             row = {}
-
-            # ✅ Maintain order
             for field in selected_fields:
                 if field == "key":
                     row["key"] = issue.get("key")
@@ -151,23 +169,70 @@ def download_excel(request: SearchRequest):
 
         start_at += max_results
 
-        # ✅ PROGRESS FIRST
         if total > 0:
             progress = int((start_at / total) * 100)
-            print(f"PROGRESS:{progress}")
+            progress_store[job_id] = progress
+            logger.info(f"[{job_id}] Progress: {progress}%")
 
-        # ✅ THEN BREAK
         if start_at >= total:
             break
 
-    # ✅ ADD THIS BLOCK
     if not all_issues:
         raise HTTPException(status_code=404, detail="No issues found")
 
     file_path, file_name = generate_excel(all_issues)
 
-    return FileResponse(
+    logger.info(f"[{job_id}] File generated: {file_path}")
+
+    return file_path, file_name
+
+@router.post("/download/start")
+def start_download(request: SearchRequest):
+
+    job_id = str(uuid.uuid4())
+    progress_store[job_id] = 0
+
+    logger.info(f"[{job_id}] Job started")
+
+    def run_job():
+        try:
+            file_path, file_name = generate_report(request, job_id)
+            jobs_store[job_id] = (file_path, file_name)
+            progress_store[job_id] = 100
+        except Exception as e:
+            progress_store[job_id] = -1  # error state
+            logger.error(f"[{job_id}] ERROR: {str(e)}")
+
+    Thread(target=run_job).start()
+
+    return {"job_id": job_id}
+
+@router.get("/download/file")
+def download_file(job_id: str):
+
+    if job_id not in jobs_store:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    file_path, file_name = jobs_store[job_id]
+
+    logger.info(f"[{job_id}] Download requested: {file_path}")
+
+    response = FileResponse(
         path=file_path,
         filename=file_name,
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
     )
+
+    # ✅ DELAY CLEANUP (IMPORTANT)
+    def cleanup():
+        time.sleep(20)  # wait for download
+        jobs_store.pop(job_id, None)
+        progress_store.pop(job_id, None)
+
+    threading.Thread(target=cleanup).start()
+
+    return response
+
+@router.get("/progress/{job_id}")
+def get_progress(job_id: str):
+    return {"progress": progress_store.get(job_id, 0)}
